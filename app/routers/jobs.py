@@ -1,11 +1,4 @@
-"""
-Jobs router — all /jobs/* endpoints.
-
-POST /jobs/upload
-GET  /jobs/{job_id}/status
-GET  /jobs/{job_id}/results
-GET  /jobs
-"""
+"""Authenticated transaction-processing job endpoints."""
 
 import csv
 import io
@@ -15,13 +8,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.auth.security import get_current_user
 from app.database import get_db
-from app.models import Job, Transaction, JobSummary
+from app.models import Job, JobSummary, Transaction, User
 from app.schemas import (
     JobCreateResponse,
-    JobStatusResponse,
     JobListItem,
     JobResultsResponse,
+    JobStatusResponse,
     JobSummaryOut,
     TransactionOut,
 )
@@ -30,44 +24,41 @@ from app.worker.tasks import process_job
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 
-# ─── POST /jobs/upload ────────────────────────────────────────────────────────
+def get_owned_job(job_id: uuid.UUID, user: User, db: Session) -> Job:
+    job = db.query(Job).filter(Job.id == job_id, Job.owner_id == user.id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job
+
 
 @router.post("/upload", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_csv(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Accept a CSV file upload. Validate it, create a Job record (status=pending),
-    enqueue the processing task, and return the job_id immediately.
-    """
-    if not file.filename or not file.filename.endswith(".csv"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only .csv files are accepted.",
-        )
+    """Validate a CSV, create an owned job, and enqueue processing."""
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are accepted.")
 
     content_bytes = await file.read()
     try:
-        csv_content = content_bytes.decode("utf-8")
+        csv_content = content_bytes.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be UTF-8 encoded.",
-        )
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded.")
 
-    # Validate CSV has expected columns
     reader = csv.DictReader(io.StringIO(csv_content))
     required_columns = {"txn_id", "date", "merchant", "amount", "currency", "status"}
-    if not required_columns.issubset(set(reader.fieldnames or [])):
+    missing = required_columns.difference(reader.fieldnames or [])
+    if missing:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"CSV must contain columns: {required_columns}",
+            status_code=400,
+            detail=f"CSV is missing required columns: {', '.join(sorted(missing))}",
         )
 
-    # Create job record
     job = Job(
         id=uuid.uuid4(),
+        owner_id=user.id,
         filename=file.filename,
         status="pending",
     )
@@ -75,8 +66,13 @@ async def upload_csv(
     db.commit()
     db.refresh(job)
 
-    # Enqueue Celery task
-    process_job.delay(str(job.id), csv_content)
+    try:
+        process_job.delay(str(job.id), csv_content)
+    except Exception as exc:
+        job.status = "failed"
+        job.error_message = "The processing queue is unavailable. Please try again."
+        db.commit()
+        raise HTTPException(status_code=503, detail=job.error_message) from exc
 
     return JobCreateResponse(
         job_id=job.id,
@@ -85,21 +81,14 @@ async def upload_csv(
     )
 
 
-# ─── GET /jobs/{job_id}/status ────────────────────────────────────────────────
-
 @router.get("/{job_id}/status", response_model=JobStatusResponse)
-def get_job_status(job_id: uuid.UUID, db: Session = Depends(get_db)):
-    """
-    Return the current status of the job. If completed, include a summary.
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-
-    summary_out = None
-    if job.status == "completed" and job.summary:
-        summary_out = JobSummaryOut.model_validate(job.summary)
-
+def get_job_status(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    job = get_owned_job(job_id, user, db)
+    summary_out = JobSummaryOut.model_validate(job.summary) if job.status == "completed" and job.summary else None
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
@@ -113,18 +102,13 @@ def get_job_status(job_id: uuid.UUID, db: Session = Depends(get_db)):
     )
 
 
-# ─── GET /jobs/{job_id}/results ───────────────────────────────────────────────
-
 @router.get("/{job_id}/results", response_model=JobResultsResponse)
-def get_job_results(job_id: uuid.UUID, db: Session = Depends(get_db)):
-    """
-    Return the full structured output: cleaned transactions list,
-    flagged anomalies, per-category spend breakdown, and LLM narrative summary.
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-
+def get_job_results(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    job = get_owned_job(job_id, user, db)
     if job.status != "completed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -132,50 +116,35 @@ def get_job_results(job_id: uuid.UUID, db: Session = Depends(get_db)):
         )
 
     transactions = db.query(Transaction).filter(Transaction.job_id == job_id).all()
-    anomalies = [t for t in transactions if t.is_anomaly]
-
-    transactions_out = [TransactionOut.model_validate(t) for t in transactions]
-    anomalies_out = [TransactionOut.model_validate(t) for t in anomalies]
-
-    summary_out = None
-    category_breakdown = None
-    if job.summary:
-        summary_out = JobSummaryOut.model_validate(job.summary)
-        category_breakdown = job.summary.category_breakdown
-
+    anomalies = [transaction for transaction in transactions if transaction.is_anomaly]
+    summary_out = JobSummaryOut.model_validate(job.summary) if job.summary else None
     return JobResultsResponse(
         job_id=job.id,
         status=job.status,
-        transactions=transactions_out,
-        anomalies=anomalies_out,
-        category_breakdown=category_breakdown,
+        transactions=[TransactionOut.model_validate(transaction) for transaction in transactions],
+        anomalies=[TransactionOut.model_validate(transaction) for transaction in anomalies],
+        category_breakdown=job.summary.category_breakdown if job.summary else None,
         summary=summary_out,
     )
 
 
-# ─── GET /jobs ────────────────────────────────────────────────────────────────
-
 @router.get("", response_model=list[JobListItem])
 def list_jobs(
-    status: Optional[str] = Query(None, description="Filter by job status"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by job status"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    List all jobs with their status, filename, row count, and created_at.
-    Supports filtering via ?status= query parameter.
-    """
-    query = db.query(Job).order_by(Job.created_at.desc())
-    if status:
-        query = query.filter(Job.status == status.lower())
-    jobs = query.all()
-
+    query = db.query(Job).filter(Job.owner_id == user.id).order_by(Job.created_at.desc())
+    if status_filter:
+        query = query.filter(Job.status == status_filter.lower())
     return [
         JobListItem(
-            job_id=j.id,
-            status=j.status,
-            filename=j.filename,
-            row_count_raw=j.row_count_raw,
-            created_at=j.created_at,
+            job_id=job.id,
+            status=job.status,
+            filename=job.filename,
+            row_count_raw=job.row_count_raw,
+            created_at=job.created_at,
+            summary=JobSummaryOut.model_validate(job.summary) if job.status == "completed" and job.summary else None,
         )
-        for j in jobs
+        for job in query.all()
     ]

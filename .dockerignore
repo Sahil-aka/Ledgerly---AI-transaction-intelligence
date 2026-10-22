@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+.git
+.idea
+.venv
+**/__pycache__
+**/*.pyc
+postgres_data
+app

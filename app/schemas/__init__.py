@@ -1,3 +1,4 @@
+from app.schemas.auth import AuthResponse, AuthUserOut
 from app.schemas.schemas import (
     JobCreateResponse,
     JobStatusResponse,
@@ -8,6 +9,8 @@ from app.schemas.schemas import (
 )
 
 __all__ = [
+    "AuthResponse",
+    "AuthUserOut",
     "JobCreateResponse",
     "JobStatusResponse",
     "JobListItem",
