@@ -82,6 +82,7 @@ function renderDashboard() {
   const completed = state.jobs.filter((job) => job.status === "completed").length;
   const processing = state.jobs.filter((job) => ["pending", "processing"].includes(job.status)).length;
   const anomalies = state.jobs.reduce((sum, job) => sum + (job.summary?.anomaly_count || 0), 0);
+  const latestAnomalyJob = state.jobs.find((job) => job.status === "completed" && (job.summary?.anomaly_count || 0) > 0);
   const inr = state.jobs.reduce((sum, job) => sum + Number(job.summary?.total_spend_inr || 0), 0);
   app.innerHTML = `
     <div class="workspace">
@@ -99,7 +100,7 @@ function renderDashboard() {
         <section class="stats">
           <article class="stat-card"><div class="stat-top"><span>Files analyzed</span><span class="stat-icon">↗</span></div><div class="stat-value">${totalJobs}</div><div class="stat-foot">${completed} completed</div></article>
           <article class="stat-card"><div class="stat-top"><span>INR spend reviewed</span><span class="stat-icon">₹</span></div><div class="stat-value">${money(inr, "INR")}</div><div class="stat-foot">Across completed analyses</div></article>
-          <article class="stat-card"><div class="stat-top"><span>Anomalies flagged</span><span class="stat-icon">⌁</span></div><div class="stat-value">${anomalies}</div><div class="stat-foot">Worth taking a closer look</div></article>
+          <article class="stat-card"><div class="stat-top"><span>Anomalies flagged</span><span class="stat-icon">⌁</span></div><div class="stat-value">${anomalies}</div>${latestAnomalyJob ? '<button class="stat-action" id="view-anomalies">View flagged transactions →</button>' : '<div class="stat-foot">No flagged transactions yet</div>'}</article>
           <article class="stat-card"><div class="stat-top"><span>In progress</span><span class="stat-icon">◷</span></div><div class="stat-value">${processing}</div><div class="stat-foot">Jobs being processed</div></article>
         </section>
         <section class="content-grid">
@@ -115,6 +116,7 @@ function renderDashboard() {
   ["#signout", "#signout-mobile"].forEach((selector) => app.querySelector(selector)?.addEventListener("click", signout));
   app.querySelector("#new-analysis").addEventListener("click", () => document.querySelector("#csv-file").click());
   app.querySelector("#refresh-jobs").addEventListener("click", refreshJobs);
+  app.querySelector("#view-anomalies")?.addEventListener("click", () => showResults(latestAnomalyJob.job_id));
   const fileInput = app.querySelector("#csv-file");
   fileInput.addEventListener("change", () => { const file = fileInput.files[0]; document.querySelector("#file-name").textContent = file ? file.name : ""; if (file) uploadFile(file); });
   const dropZone = app.querySelector("#drop-zone");
@@ -155,9 +157,15 @@ async function showResults(jobId) {
     const data = await request(`/jobs/${encodeURIComponent(jobId)}/results`);
     const summary = data.summary || {};
     const maxCategory = Math.max(1, ...Object.values(data.category_breakdown || {}).map(Number));
+    const anomaliesMarkup = data.anomalies.length
+      ? '<section class="anomalies-section"><div class="panel-head"><div><h3>Flagged transactions</h3><div class="panel-sub">' + data.anomalies.length + ' transaction(s) matched an anomaly rule. A flag is a prompt to review, not proof of fraud.</div></div></div><div class="anomaly-list">' +
+        data.anomalies.map((txn) => '<article class="anomaly-item"><div class="anomaly-item-top"><div><div class="anomaly-date">' + escapeHtml(date(txn.date)) + '</div><h4>' + escapeHtml(txn.merchant || 'Unknown merchant') + '</h4></div><strong class="anomaly-amount">' + money(txn.amount, txn.currency || 'INR') + '</strong></div><p>' + escapeHtml(txn.anomaly_reason || 'Flagged as unusual by the anomaly detector.') + '</p><div class="anomaly-meta">Transaction ' + escapeHtml(txn.txn_id || '—') + ' · ' + escapeHtml(txn.category || 'Uncategorized') + '</div></article>').join('') +
+        '</div></section>'
+      : '<section class="anomalies-section"><div class="panel-head"><div><h3>Flagged transactions</h3><div class="panel-sub">No transactions triggered the anomaly rules in this file.</div></div></div></section>';
     panel.innerHTML = `<div class="panel-head"><div><span class="eyebrow">Completed analysis</span><h3>${escapeHtml(data.transactions[0]?.merchant ? "Transaction results" : "Analysis results")}</h3><div class="panel-sub">${data.transactions.length} cleaned transactions · ${data.anomalies.length} anomalies</div></div><button class="button ghost small" id="close-detail">Close ×</button></div>
       <div class="summary-grid"><div class="summary-item"><span>INR spend</span><strong>${money(summary.total_spend_inr,"INR")}</strong></div><div class="summary-item"><span>USD spend</span><strong>${money(summary.total_spend_usd,"USD")}</strong></div><div class="summary-item"><span>Anomalies</span><strong>${summary.anomaly_count ?? data.anomalies.length}</strong></div><div class="summary-item"><span>Risk level</span><strong>${escapeHtml(summary.risk_level || "—")}</strong></div></div>
       ${summary.narrative ? `<p class="narrative">${escapeHtml(summary.narrative)}</p>` : ""}
+${anomaliesMarkup}
       <div class="content-grid"><div><div class="panel-head"><h3>Transactions</h3><span class="panel-sub">${data.transactions.length} rows</span></div><div class="table-wrap"><table class="jobs-table"><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Category</th><th>Flag</th></tr></thead><tbody>${data.transactions.map((t) => `<tr><td>${escapeHtml(t.date || "—")}</td><td>${escapeHtml(t.merchant || "—")}</td><td>${money(t.amount,t.currency || "INR")}</td><td>${escapeHtml(t.category || "—")}</td><td>${t.is_anomaly ? `<span class="anomaly-tag" title="${escapeHtml(t.anomaly_reason)}">Flagged</span>` : "—"}</td></tr>`).join("")}</tbody></table></div></div>
       <div><div class="panel-head"><h3>Category mix</h3></div><div class="category-list">${Object.entries(data.category_breakdown || {}).sort((a,b)=>Number(b[1])-Number(a[1])).map(([name,value]) => `<div class="category-row"><span>${escapeHtml(name)}</span><span>${money(value,"INR")}</span><div class="category-bar"><i style="width:${Math.min(100, Number(value)/maxCategory*100)}%"></i></div></div>`).join("") || '<div class="empty-state">No category totals available.</div>'}</div></div></div>`;
     panel.querySelector("#close-detail").addEventListener("click", () => { panel.hidden = true; });
