@@ -25,8 +25,7 @@ from app.services.llm import classify_transactions, generate_narrative_summary
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(bind=True, max_retries=0, name="app.worker.tasks.process_job")
-def process_job(self, job_id: str, csv_content: str):
+def process_job_sync(job_id: str, csv_content: str):
     """
     Main processing task. Accepts the raw CSV content as a string
     (stored in Redis via the enqueue call).
@@ -126,3 +125,9 @@ def process_job(self, job_id: str, csv_content: str):
         raise
     finally:
         db.close()
+
+
+@celery_app.task(bind=True, max_retries=0, name="app.worker.tasks.process_job")
+def process_job(self, job_id: str, csv_content: str):
+    """Celery entry point; the same processing function is used by inline mode."""
+    return process_job_sync(job_id, csv_content)

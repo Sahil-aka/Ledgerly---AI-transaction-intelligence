@@ -25,9 +25,10 @@ flowchart LR
     Person[User] -->|Sign in, upload CSV, view results| Web[Ledgerly web app]
     Web -->|HTTP requests| API[FastAPI API]
     API -->|Users, jobs, results| DB[(PostgreSQL<br/>Supabase hosted or local)]
-    API -->|Queue processing job| Redis[(Redis)]
-    Redis --> Worker[Celery worker]
-    Worker --> Clean[Clean and normalize]
+    API -->|Local: queue job| Redis[(Redis)]
+    Redis -->|Local| Worker[Celery worker]
+    API -->|Workerless hosting: in-process background task| Clean[Clean and normalize]
+    Worker --> Clean
     Clean --> Detect[Detect anomalies]
     Detect --> Classify[Categorize and summarize]
     Classify <-->|Optional AI calls| Gemini[Google Gemini]
@@ -35,7 +36,7 @@ flowchart LR
     API -->|Job status and results| Web
 ```
 
-The API handles accounts, uploads, and results. It puts processing work onto Redis so CSV analysis can run asynchronously in the Celery worker. The worker stores cleaned transactions and summaries in PostgreSQL. Gemini adds categories and narrative analysis when configured; computed totals and anomaly detection remain part of the processing pipeline.
+The API handles accounts, uploads, and results. Local Docker Compose uses Redis and a Celery worker to process uploads asynchronously. A workerless deployment can set `PROCESSING_MODE=inline` so the API schedules processing in its own process; this mode is intended for small demo uploads and does not require Redis. Both modes store cleaned transactions and summaries in PostgreSQL. Gemini adds categories and narrative analysis when configured; computed totals and anomaly detection remain part of the processing pipeline.
 
 ## Processing pipeline
 
@@ -52,7 +53,7 @@ The API handles accounts, uploads, and results. It puts processing work onto Red
 | Web app | HTML, CSS, JavaScript, Nginx |
 | API and authentication | FastAPI, Pydantic, JWT, Argon2 |
 | Data storage | PostgreSQL, SQLAlchemy |
-| Background processing | Celery, Redis |
+| Background processing | Celery and Redis locally; optional in-process mode for workerless hosting |
 | AI analysis | Google Gemini |
 | Development environment | Docker Compose |
 

@@ -5,10 +5,11 @@ import io
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.auth.security import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models import Job, JobSummary, Transaction, User
 from app.schemas import (
@@ -19,7 +20,7 @@ from app.schemas import (
     JobSummaryOut,
     TransactionOut,
 )
-from app.worker.tasks import process_job
+from app.worker.tasks import process_job, process_job_sync
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -33,11 +34,12 @@ def get_owned_job(job_id: uuid.UUID, user: User, db: Session) -> Job:
 
 @router.post("/upload", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_csv(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Validate a CSV, create an owned job, and enqueue processing."""
+    """Validate a CSV, create an owned job, and schedule processing."""
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only .csv files are accepted.")
 
@@ -66,18 +68,25 @@ async def upload_csv(
     db.commit()
     db.refresh(job)
 
-    try:
-        process_job.delay(str(job.id), csv_content)
-    except Exception as exc:
-        job.status = "failed"
-        job.error_message = "The processing queue is unavailable. Please try again."
-        db.commit()
-        raise HTTPException(status_code=503, detail=job.error_message) from exc
+    if settings.PROCESSING_MODE.strip().lower() == "inline":
+        # Runs inside the API process after returning the response; suitable for
+        # small demo uploads when a separate Celery worker is not deployed.
+        background_tasks.add_task(process_job_sync, str(job.id), csv_content)
+        message = "Job created and processing started."
+    else:
+        try:
+            process_job.delay(str(job.id), csv_content)
+        except Exception as exc:
+            job.status = "failed"
+            job.error_message = "The processing queue is unavailable. Please try again."
+            db.commit()
+            raise HTTPException(status_code=503, detail=job.error_message) from exc
+        message = "Job created and enqueued for processing."
 
     return JobCreateResponse(
         job_id=job.id,
         status=job.status,
-        message="Job created and enqueued for processing.",
+        message=message,
     )
 
 

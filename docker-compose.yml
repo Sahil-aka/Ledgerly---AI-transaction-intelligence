@@ -34,6 +34,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      PROCESSING_MODE: ${PROCESSING_MODE:-celery}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-development-only-change-before-deploy}
       JWT_ACCESS_TOKEN_MINUTES: ${JWT_ACCESS_TOKEN_MINUTES:-720}

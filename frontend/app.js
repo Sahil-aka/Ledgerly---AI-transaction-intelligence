@@ -100,7 +100,7 @@ function renderDashboard() {
           <article class="stat-card"><div class="stat-top"><span>Files analyzed</span><span class="stat-icon">↗</span></div><div class="stat-value">${totalJobs}</div><div class="stat-foot">${completed} completed</div></article>
           <article class="stat-card"><div class="stat-top"><span>INR spend reviewed</span><span class="stat-icon">₹</span></div><div class="stat-value">${money(inr, "INR")}</div><div class="stat-foot">Across completed analyses</div></article>
           <article class="stat-card"><div class="stat-top"><span>Anomalies flagged</span><span class="stat-icon">⌁</span></div><div class="stat-value">${anomalies}</div><div class="stat-foot">Worth taking a closer look</div></article>
-          <article class="stat-card"><div class="stat-top"><span>In progress</span><span class="stat-icon">◷</span></div><div class="stat-value">${processing}</div><div class="stat-foot">Background processing</div></article>
+          <article class="stat-card"><div class="stat-top"><span>In progress</span><span class="stat-icon">◷</span></div><div class="stat-value">${processing}</div><div class="stat-foot">Jobs being processed</div></article>
         </section>
         <section class="content-grid">
           <article class="panel"><div class="panel-head"><div><h3>Recent analyses</h3><div class="panel-sub">Your latest transaction files</div></div><button class="button ghost small" id="refresh-jobs">↻ Refresh</button></div><div id="jobs-list">${renderJobsTable()}</div></article>
@@ -143,9 +143,9 @@ function syncPolling() {
 async function uploadFile(file) {
   const status = document.querySelector("#upload-status");
   if (!file.name.toLowerCase().endsWith(".csv")) { status.textContent = "Choose a .csv file to continue."; return; }
-  status.innerHTML = '<span class="spinner"></span> Uploading and queuing your analysis…';
+  status.innerHTML = '<span class="spinner"></span> Uploading and starting your analysis…';
   const form = new FormData(); form.append("file", file);
-  try { const job = await request("/jobs/upload", { method: "POST", body: form }); status.textContent = "Queued — we’ll update the status here."; showToast("Your transaction file is queued for analysis."); await refreshJobs(); }
+  try { const job = await request("/jobs/upload", { method: "POST", body: form }); status.textContent = `${job.message} We’ll update the status here.`; showToast("Your transaction analysis has started."); await refreshJobs(); }
   catch (error) { status.textContent = error.message; showToast(error.message, true); }
 }
 async function showResults(jobId) {
