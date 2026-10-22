@@ -73,6 +73,8 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     restart: unless-stopped
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-http://api:8000}
     ports:
       - "${FRONTEND_PORT:-5173}:80"
     depends_on:
