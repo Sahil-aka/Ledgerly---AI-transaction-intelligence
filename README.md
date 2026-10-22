@@ -54,7 +54,9 @@ The web app stores the short-lived access token in tab-scoped session storage an
 
 ## Live hosting
 
-The Compose stack is ready to run as a multi-service deployment, but this repository does not select a hosting provider. Once the provider is chosen, configure its persistent PostgreSQL storage, Redis, HTTPS, `GEMINI_API_KEY`, and a unique `JWT_SECRET_KEY` as managed secrets. Do not commit `.env` or place secrets in frontend files. The current API command and bind mounts are tuned for local development; switch to a production ASGI command and remove the development mounts for a public deployment.
+For a hosted demo, use Render for the API, worker, Redis-compatible queue, and frontend, with Supabase providing managed PostgreSQL. In Render, configure `DATABASE_URL` from the Supabase **Session pooler** connection string and add `sslmode=require`. Render's network is IPv4-only, while Supabase direct connections use IPv6 by default; the Session pooler is the appropriate IPv4 option for this persistent API and worker. Copy the exact host and username from Supabase's Connect dialog, and URL-encode special characters in the database password. [Supabase connection guidance](https://supabase.com/docs/guides/database/connecting-to-postgres)
+
+Set `GEMINI_API_KEY` and a unique random `JWT_SECRET_KEY` as Render secrets. Keep `.env` out of Git and never put server secrets in frontend files. The current API command and bind mounts are tuned for local development; use a production ASGI command and remove the development mounts for public deployment. The frontend currently proxies `/api` to the Compose service name, so its API proxy must be configured for Render's private service address before deployment.
 
 ## Data processing
 
