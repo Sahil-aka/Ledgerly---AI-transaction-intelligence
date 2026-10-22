@@ -1,63 +1,78 @@
-# Ledgerly — AI transaction intelligence
+# Ledgerly
 
-Ledgerly turns a messy transaction CSV into a searchable analysis with category totals, anomaly flags, and an AI-written summary. Each account has a private workspace; jobs and results are visible only to the account that uploaded them.
+### AI-powered transaction intelligence
 
-## What’s included
+Ledgerly turns raw transaction CSVs into clear, account-specific insights. Upload a file to clean and categorize transactions, spot unusual activity, and explore a concise spending summary.
 
-- Responsive web app with sign-up, sign-in, CSV upload, processing status, results, and anomaly details.
-- FastAPI backend with Argon2 password hashing and 12-hour signed bearer tokens.
-- PostgreSQL for users, jobs, cleaned transactions, and summaries; Redis and Celery for asynchronous processing.
-- Gemini classification and narrative summaries when `GEMINI_API_KEY` is configured.
-- A sample CSV available from the web app.
+## Why Ledgerly
 
-## Run locally with Docker
+Financial exports are often inconsistent: dates and amounts vary in format, categories may be missing, and suspicious activity can be hard to notice in a spreadsheet. Ledgerly automates the first pass so people can focus on the transactions that need attention.
 
-Requirements: Docker Desktop with the Linux engine enabled.
+## Product features
 
-1. Copy `.env.example` to `.env` **once**. In PowerShell:
+- **Private workspaces:** create an account and see only the analyses you uploaded.
+- **CSV analysis:** upload a transaction file and follow its processing status.
+- **Data cleanup:** normalize common date, amount, currency, and status variations; remove duplicate rows.
+- **Anomaly detection:** flag outliers and merchant/currency mismatches with an explanation.
+- **AI categorization:** classify uncategorized transactions and generate a readable summary with Gemini.
+- **Results dashboard:** review spending totals, category breakdowns, merchants, and flagged transactions.
+- **Sample data:** try the included transaction CSV from the app.
 
-   ```powershell
-   Copy-Item .env.example .env
-   notepad .env
-   ```
+## System architecture
 
-   If `.env` already exists, edit it instead of copying over it. Set `GEMINI_API_KEY` to your Gemini key. Set `JWT_SECRET_KEY` to a long random value; for a live deployment, never use the development fallback.
-
-2. Start the stack from the repository root:
-
-   ```powershell
-   docker compose up --build -d
-   ```
-
-3. Open the web app at <http://localhost:5173>. The API health endpoint is <http://localhost:8002/health> and API docs are at <http://localhost:8002/docs>.
-
-   If port `5173` is already in use, set `FRONTEND_PORT=5174` in `.env` and rerun Compose. The API is mapped to host port `8002`; PostgreSQL and Redis stay on the private Compose network and do not publish host ports.
-
-4. Create an account, download the sample CSV in the app, upload it, and select the new analysis to see its summary and transactions.
-
-To stop the containers while keeping the PostgreSQL volume:
-
-```powershell
-docker compose down
+```mermaid
+flowchart LR
+    Person[User] -->|Sign in, upload CSV, view results| Web[Ledgerly web app]
+    Web -->|HTTP requests| API[FastAPI API]
+    API -->|Users, jobs, results| DB[(PostgreSQL<br/>Supabase hosted or local)]
+    API -->|Queue processing job| Redis[(Redis)]
+    Redis --> Worker[Celery worker]
+    Worker --> Clean[Clean and normalize]
+    Clean --> Detect[Detect anomalies]
+    Detect --> Classify[Categorize and summarize]
+    Classify <-->|Optional AI calls| Gemini[Google Gemini]
+    Classify -->|Transactions and summary| DB
+    API -->|Job status and results| Web
 ```
 
-`docker compose down -v` deletes the database volume and all saved accounts and analyses. Use it only if you intend to reset the local demo data.
+The API handles accounts, uploads, and results. It puts processing work onto Redis so CSV analysis can run asynchronously in the Celery worker. The worker stores cleaned transactions and summaries in PostgreSQL. Gemini adds categories and narrative analysis when configured; computed totals and anomaly detection remain part of the processing pipeline.
 
-## API authentication
+## Processing pipeline
 
-- `POST /auth/signup` accepts `{ "name", "email", "password" }` and returns a bearer token.
-- `POST /auth/login` accepts `{ "email", "password" }` and returns a bearer token.
-- `GET /auth/me` returns the authenticated account.
-- All `/jobs` routes require `Authorization: Bearer <access_token>`.
+1. Validate the uploaded CSV columns and create a job for the signed-in account.
+2. Normalize transaction fields and remove exact duplicate rows.
+3. Detect unusual amounts and known merchant/currency mismatches.
+4. Use Gemini to categorize uncategorized transactions and write a summary when available.
+5. Save cleaned transactions, anomaly details, and summary data for the dashboard.
 
-The web app stores the short-lived access token in tab-scoped session storage and clears it on sign-out or expiry. Passwords are never stored in plain text. Existing jobs created before authentication remain unowned and are not visible to new accounts.
+## Technology
 
-## Live hosting
+| Layer | Tools |
+|---|---|
+| Web app | HTML, CSS, JavaScript, Nginx |
+| API and authentication | FastAPI, Pydantic, JWT, Argon2 |
+| Data storage | PostgreSQL, SQLAlchemy |
+| Background processing | Celery, Redis |
+| AI analysis | Google Gemini |
+| Development environment | Docker Compose |
 
-For a hosted demo, use Render for the API, worker, Redis-compatible queue, and frontend, with Supabase providing managed PostgreSQL. In Render, configure `DATABASE_URL` from the Supabase **Session pooler** connection string and add `sslmode=require`. Render's network is IPv4-only, while Supabase direct connections use IPv6 by default; the Session pooler is the appropriate IPv4 option for this persistent API and worker. Copy the exact host and username from Supabase's Connect dialog, and URL-encode special characters in the database password. [Supabase connection guidance](https://supabase.com/docs/guides/database/connecting-to-postgres)
+## API surface
 
-Set `GEMINI_API_KEY` and a unique random `JWT_SECRET_KEY` as Render secrets. Keep `.env` out of Git and never put server secrets in frontend files. The current API command and bind mounts are tuned for local development; use a production ASGI command and remove the development mounts for public deployment. The frontend currently proxies `/api` to the Compose service name, so its API proxy must be configured for Render's private service address before deployment.
+| Endpoint | Purpose |
+|---|---|
+| `POST /auth/signup` | Create an account |
+| `POST /auth/login` | Sign in and receive a bearer token |
+| `GET /auth/me` | Return the signed-in account |
+| `POST /jobs/upload` | Upload a CSV for analysis |
+| `GET /jobs` | List the signed-in account’s analyses |
+| `GET /jobs/{job_id}/status` | Check processing progress and summary |
+| `GET /jobs/{job_id}/results` | Get cleaned transactions and anomalies |
+| `GET /health` | Check API availability |
 
-## Data processing
+## Security and data ownership
 
-The worker normalizes dates and amounts, removes duplicates, detects outliers and domestic-merchant currency mismatches, classifies uncategorized rows, and stores a summary. Gemini calls can fail independently; classification failures are marked on rows and the summary uses computed totals.
+Passwords are stored as Argon2 hashes. API access uses signed bearer tokens, and every analysis endpoint scopes jobs to the authenticated account. Database credentials and AI keys belong in server-side environment variables; they should never be committed to the repository or embedded in frontend code.
+
+## Example dataset
+
+[`transactions.csv`](transactions.csv) contains sample transactions with mixed date and amount formats, missing categories, duplicate rows, and seeded outliers. It is intended for demonstrating the cleanup and anomaly-detection flow.
