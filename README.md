@@ -4,9 +4,9 @@
 
 ## Live demo
 
-**For interviewers:** [Open the Ledgerly demo](https://ledgerly-frontend-06y3.onrender.com).
+**[Launch Ledgerly →](https://ledgerly-frontend-06y3.onrender.com)**
 
-Create an account to explore the dashboard, upload a CSV, and review transaction summaries and flagged anomalies. The included [`transactions.csv`](transactions.csv) is available as sample data.
+Explore the dashboard, create an account, and upload the [sample transaction CSV](transactions.csv) to see cleanup, spending insights, and anomaly explanations in action.
 
 Ledgerly turns raw transaction CSVs into clear, account-specific insights. Upload a file to clean and categorize transactions, spot unusual activity, and explore a concise spending summary.
 
